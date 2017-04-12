@@ -1,12 +1,17 @@
 
+// 2017-04-12 -- ADD: motorRunDiscretePosZ (motor, dir, posZ) gyroZangle
+// 2017-04-12 -- ADD: motorRunDiscretePosY (motor, dir, posY)
+// 2017-04-12 -- MOD: motorRunTime (with Pos)
+// 2017-04-12 -- ADD: motorRunPos
+
+// 2017-04-11 -- TODO:  updatePosition insert into motorRun
 // 2017-04-11 -- ISSUE: TimerOne Interrupt doesn't work.
-// 2017-04-11 -- TODO:  updatePosition insert into motorRun          
+
 
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "Wire.h"
 #include "Kalman.h"
-#include "TimerOne.h"
 
 void trackSurface(int angle);
 long usonicDistanceCm();
@@ -53,7 +58,7 @@ long usonicDistanceValue = 100;
 #define STOP_REASON_BLOCK 0
 #define STOP_REASON_SENS_IR 1
 #define STOP_REASON_TIME 2
-#define STOP_REASON_GYRO 3
+#define STOP_REASON_POS 3
 #define STOP_REASON_BUTTON 4
 #define STOP_REASON_USONIC 5
 
@@ -122,6 +127,8 @@ int16_t tempRaw;
 
 // Roll and pitch are calculated using the accelerometer while yaw is calculated using the magnetometer
 double roll, pitch, yaw;
+double startY, endY;
+double startZ, endZ;
 
 // Angle calculate using the gyro only
 double gyroXangle, gyroYangle, gyroZangle;
@@ -179,7 +186,7 @@ uint8_t i2cWrite(uint8_t address, uint8_t registerAddress, uint8_t *data, uint8_
     Serial.print(F("i2cWrite failed: "));
     Serial.println(rcode);
     Serial.println("STOP");
-   // delay(10000);
+    delay(10000);
   }
   return rcode;
 }
@@ -190,9 +197,9 @@ uint8_t i2cRead(uint8_t address, uint8_t registerAddress, uint8_t *data, uint8_t
   Wire.write(registerAddress);
   uint8_t rcode = Wire.endTransmission(false); // Don't release the bus
   if (rcode) {
-   // Serial.print(F("i2cRead failed: "));
-   // Serial.println(rcode);
-  //  delay(10000);
+    Serial.print(F("i2cRead failed: "));
+    Serial.println(rcode);
+    delay(10000);
     return rcode; // See: http://arduino.cc/en/Reference/WireEndTransmission
   }
   Wire.requestFrom(address, nbytes, (uint8_t)true); // Send a repeated start and then release the bus after reading
@@ -205,7 +212,7 @@ uint8_t i2cRead(uint8_t address, uint8_t registerAddress, uint8_t *data, uint8_t
       if (Wire.available())
         data[i] = Wire.read();
       else {
-       // Serial.println(F("i2cRead timeout"));
+        Serial.println(F("i2cRead timeout"));
         return 5; // This error value is not already taken by endTransmission
       }
     }
@@ -338,11 +345,11 @@ void initMPU() {
   }
 
   // Configure device for continuous mode
-  while (i2cWrite(HMC5883L, 0x02, 0x00, true)); 
+  while (i2cWrite(HMC5883L, 0x02, 0x00, true));
   calibrateMag();
 
   // Wait for sensors to stabilize
-  delay(100); 
+  delay(100);
 
   // STARTING ANGLE
   updateMPU6050();
@@ -351,17 +358,17 @@ void initMPU() {
   updateYaw();
 
   // X, ROLL
-  kalmanX.setAngle(roll); 
+  kalmanX.setAngle(roll);
   gyroXangle = roll;
   compAngleX = roll;
 
   // Y, PITCH
-  kalmanY.setAngle(pitch); 
+  kalmanY.setAngle(pitch);
   gyroYangle = pitch;
   compAngleY = pitch;
 
   // Z, YAW
-  kalmanZ.setAngle(yaw); 
+  kalmanZ.setAngle(yaw);
   gyroZangle = yaw;
   compAngleZ = yaw;
 
@@ -370,39 +377,15 @@ void initMPU() {
 
 void updatePosition()
 {
- // updateMPU6050();
- // Get accelerometer and gyroscope values
-  while (i2cRead(MPU6050, 0x3B, i2cData, 14));
-  accX = ((i2cData[0] << 8) | i2cData[1]);
-  accY = -((i2cData[2] << 8) | i2cData[3]);
-  accZ = ((i2cData[4] << 8) | i2cData[5]);
-  tempRaw = (i2cData[6] << 8) | i2cData[7];
-  gyroX = -(i2cData[8] << 8) | i2cData[9];
-  gyroY = (i2cData[10] << 8) | i2cData[11];
-  gyroZ = -(i2cData[12] << 8) | i2cData[13];
+  updateMPU6050();
+  updateHMC5883L();
 
-// updateHMC5883L();
-// Get magnetometer values
-//  while (i2cRead(HMC5883L, 0x03, i2cData, 6)); 
-  magX = ((i2cData[0] << 8) | i2cData[1]);
-  magZ = ((i2cData[2] << 8) | i2cData[3]);
-  magY = ((i2cData[4] << 8) | i2cData[5]);
-
- // Calculate delta time
-  //double dt = (double)(micros() - timer) / 1000000; 
-  //timer = micros();
-  double  dt = 100000;
-
+  // Calculate delta time
+  double dt = (double)(micros() - timer) / 1000000;
+  timer = micros();
 
   /* Roll and pitch estimation */
-//  updatePitchRoll();
-  #ifdef RESTRICT_PITCH // Eq. 25 and 26
-  roll = atan2(accY, accZ) * RAD_TO_DEG;
-  pitch = atan(-accX / sqrt(accY * accY + accZ * accZ)) * RAD_TO_DEG;
-#else // Eq. 28 and 29
-  roll = atan(accY / sqrt(accX * accX + accZ * accZ)) * RAD_TO_DEG;
-  pitch = atan2(-accX, accZ) * RAD_TO_DEG;
-#endif
+  updatePitchRoll();
 
   double gyroXrate = gyroX / 131.0; // Convert to deg/s
   double gyroYrate = gyroY / 131.0; // Convert to deg/s
@@ -447,23 +430,23 @@ void updatePosition()
     gyroZangle = yaw;
   } else
   // Calculate the angle using a Kalman filter
-    kalAngleZ = kalmanZ.getAngle(yaw, gyroZrate, dt); 
+    kalAngleZ = kalmanZ.getAngle(yaw, gyroZrate, dt);
 
 
-  // Estimate angles using gyro only 
+  // Estimate angles using gyro only
   // Calculate gyro angle without any filter
-  gyroXangle += gyroXrate * dt; 
+  gyroXangle += gyroXrate * dt;
   gyroYangle += gyroYrate * dt;
   gyroZangle += gyroZrate * dt;
-  
+
   // Calculate gyro angle using the unbiased rate from the Kalman filter
-  gyroXangle += kalmanX.getRate() * dt; 
+  gyroXangle += kalmanX.getRate() * dt;
   gyroYangle += kalmanY.getRate() * dt;
   gyroZangle += kalmanZ.getRate() * dt;
 
   // Estimate angles using complimentary filter
   // Calculate the angle using a Complimentary filter
-  compAngleX = 0.93 * (compAngleX + gyroXrate * dt) + 0.07 * roll; 
+  compAngleX = 0.93 * (compAngleX + gyroXrate * dt) + 0.07 * roll;
   compAngleY = 0.93 * (compAngleY + gyroYrate * dt) + 0.07 * pitch;
   compAngleZ = 0.93 * (compAngleZ + gyroZrate * dt) + 0.07 * yaw;
 
@@ -475,10 +458,10 @@ void updatePosition()
   if (gyroZangle < -180 || gyroZangle > 180)
     gyroZangle = kalAngleZ;
 }
- 
+
 void printPosition()
 {
-  Serial.print("X: ");
+  Serial.print("  \tX: ");
   Serial.print(roll); Serial.print(" ");
   //Serial.print(gyroXangle); Serial.print(" ");
   //Serial.print(compAngleX); Serial.print(" ");
@@ -492,21 +475,20 @@ void printPosition()
 
   Serial.print("\tZ: ");
   Serial.print(yaw); Serial.print(" ");
-  //Serial.print(gyroZangle); Serial.print(" ");
-  //Serial.print(compAngleZ); Serial.print(" ");
-  //Serial.print(kalAngleZ); Serial.print(" ");
-  
+  Serial.print(gyroZangle); Serial.print(" ");
+  Serial.print(compAngleZ); Serial.print(" ");
+  Serial.print(kalAngleZ); Serial.print(" ");
+
   // After gain and offset compensation
   /*
   Serial.print("\tMagXYZ: ");
-  Serial.print(magX); Serial.print(" "); 
+  Serial.print(magX); Serial.print(" ");
   Serial.print(magY); Serial.print(" ");
   Serial.print(magZ); Serial.print(" ");
   Serial.print("\tT: ");
   double temperature = (double)tempRaw / 340.0 + 36.53;
-  Serial.print(temperature); 
+  Serial.print(temperature);
   */
-  Serial.println();
 }
 
 // SETUP
@@ -518,7 +500,7 @@ void setup()
   Serial.begin(115200);
   Serial.println(F("START"));
 
-  // INIT PINs  
+  // INIT PINs
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
   pinMode(PIN_LED, OUTPUT);
@@ -529,31 +511,37 @@ void setup()
   // Interrupt Button
   attachInterrupt(1, intButton, RISING);
   Serial.println(F("Button interrupt attach DONE"));
-  
+
   // INIT MPU
   initMPU();
   Serial.println(F("MPU Init DONE"));
-  delay(1000);
-  // INIT Timer
-  // Timer Initialization, us
-  Timer1.initialize(1000000); 
-  delay(1000);
-  Serial.println(F("Timer init DONE"));
-  Timer1.attachInterrupt( updatePosition );
-  Serial.println(F("Timer interrupt attach DONE"));
 
 // ****************************************
 // ****************************************
-//initMotorG();
-// initMotorH();
- //initMotorR();
-// testMotorAll();
-//runMotorG_Tight();
+
+
+updatePosition();
+startZ = gyroZangle;
+startY = 10;
+endY = 60;
+/*
+motorRunDiscretePosY(MOTOR_H, DIR_FRWD, endY);
+delay(1000);
+
 motorRunCurrent(MOTOR_G, DIR_LOOSE);
 while (digitalRead(PIN_IR));
 motorRunCurrent(MOTOR_G, DIR_TIGHT);
-//trackSurface(160);
-  Serial.println(F("DONE"));
+
+delay(1000);
+motorRunDiscretePosY(MOTOR_H, DIR_BACK, startY);
+
+delay(1000);
+*/
+motorRunDiscretePosZ(MOTOR_R, DIR_CCW, startZ-50);
+delay(1000);
+motorRunDiscretePosZ(MOTOR_R, DIR_CW, startZ);
+
+Serial.println(F("DONE"));
 
 // ****************************************
 // ****************************************
@@ -581,7 +569,7 @@ void motorOff(uint8_t motor, uint8_t reason)
  if (motor == MOTOR_ALL)
    Serial.print(F("ALL "));
  else
-   Serial.print(motor);
+   Serial.print(motorName[motor]);
 
  switch (reason)
  {
@@ -594,8 +582,8 @@ void motorOff(uint8_t motor, uint8_t reason)
   case STOP_REASON_TIME:
     Serial.println(F(" STOP: TIME"));
     break;
-  case STOP_REASON_GYRO:
-    Serial.println(F(" STOP: GYRO"));
+  case STOP_REASON_POS:
+    Serial.println(F(" STOP: POSITION"));
     break;
   case STOP_REASON_BUTTON:
     Serial.println(F(" STOP: BUTTON"));
@@ -634,7 +622,7 @@ uint8_t motorRun(uint8_t motor, uint8_t motorDir, uint8_t motorSpeed)
     Serial.print(F("  MOTOR: "));
     Serial.print(motorName[motor]);
     Serial.print(F("  DIR: "));
-    Serial.print(motorDirName[motorDir]);
+    Serial.print(motorDirName[2*motor+motorDir]);
     Serial.print(F("  SPEED: "));
     Serial.print(motorSpeed);
 
@@ -648,6 +636,28 @@ uint8_t motorRun(uint8_t motor, uint8_t motorDir, uint8_t motorSpeed)
     return motorCurrentSensorValue;
 }
 
+uint8_t motorRunPos(uint8_t motor, uint8_t motorDir, uint8_t motorSpeed)
+{
+    int motorCurrentSensorValue;
+    Serial.print(F("  MOTOR: "));
+    Serial.print(motorName[motor]);
+    Serial.print(F("  DIR: "));
+    Serial.print(motorDirName[2*motor+motorDir]);
+    Serial.print(F("  SPEED: "));
+    Serial.print(motorSpeed);
+
+    setMotorDirection(motor, motorDir);
+    analogWrite(pinPWM[motor], motorSpeed);
+    delay(STEP_MS);
+    motorCurrentSensorValue = analogRead(pinCS[motor]);
+    Serial.print("  CURRENT: ");
+    Serial.print(motorCurrentSensorValue);
+
+    updatePosition();
+    printPosition();
+    
+    return motorCurrentSensorValue;
+}
 
 
 uint8_t motorRunCurrent(uint8_t motor, uint8_t motorDir)
@@ -664,7 +674,7 @@ uint8_t motorRunCurrent(uint8_t motor, uint8_t motorDir)
   Serial.print(F(" CURRENT"));
   printPosition();
   Serial.println();
-  
+
   motorCurrentSensorValue = analogRead(pinCS[motor]);
   motorSpeed = motorSpeedStart[2*motor+motorDir];
   flagStart = true;
@@ -692,6 +702,70 @@ uint8_t motorRunCurrent(uint8_t motor, uint8_t motorDir)
   return STOP_REASON_BLOCK;
  }
 
+uint8_t motorRunDiscretePosY (uint8_t motor, uint8_t motorDir, double posY)
+{
+  int motorSpeed = motorSpeedStart[2*motor];
+
+  Serial.print(F("START MOTOR_"));
+  Serial.print(motorName[motor]);
+  Serial.print(F(" "));
+  Serial.print(motorDirName[2*motor+motorDir]);
+  Serial.print(F(" PosY: "));
+  Serial.print(posY);
+  Serial.println();
+
+  if (motorDir == DIR_FRWD)
+  {
+    while (pitch < posY)
+    {
+      motorRunTime(motor, motorDir, 50);
+      delay(50);
+    }
+  }
+  else
+  {
+    while (pitch > posY)
+    {
+      motorRunTime(motor, motorDir, 50);
+      delay(50);
+    }
+  }
+  motorOff(motor, STOP_REASON_POS);
+  return STOP_REASON_POS;
+}
+
+
+uint8_t motorRunDiscretePosZ (uint8_t motor, uint8_t motorDir, double posZ)
+{
+  int motorSpeed = motorSpeedStart[2*motor];
+
+  Serial.print(F("START MOTOR_"));
+  Serial.print(motorName[motor]);
+  Serial.print(F(" "));
+  Serial.print(motorDirName[2*motor+motorDir]);
+  Serial.print(F(" PosZ: "));
+  Serial.print(posZ);
+  Serial.println();
+
+  if (motorDir == DIR_CW)
+  {
+    while (gyroZangle < posZ)
+    {
+      motorRunTime(motor, motorDir, 50);
+      delay(50);
+    }
+  }
+  else
+  {
+    while (gyroZangle > posZ)
+    {
+      motorRunTime(motor, motorDir, 50);
+      delay(50);
+    }
+  }
+  motorOff(motor, STOP_REASON_POS);
+  return STOP_REASON_POS;
+}
 
 
 uint8_t motorRunUSonicDist(uint8_t motor, uint8_t motorDir, int runDist)
@@ -741,14 +815,14 @@ uint8_t motorRunTime(uint8_t motor, uint8_t motorDir, int runTime)
   Serial.print(F("START MOTOR_"));
   Serial.print(motorName[motor]);
   Serial.print(F(" "));
-  Serial.print(motorDirName[motorDir]);
+  Serial.print(motorDirName[2*motor+motorDir]);
   Serial.print(F(" TIME: "));
   Serial.print(runTime);
   Serial.println();
 
   for(i=0; i<runTime; i+=STEP_MS)
   {
-    motorCurrentSensorValue = motorRun(motor, motorDir, motorSpeed);
+    motorCurrentSensorValue = motorRunPos(motor, motorDir, motorSpeed);
     Serial.print(F(" TIME: "));
     Serial.println(i);
     if (motorCurrentSensorValue > motorCurrentMax[2*motor])
@@ -1132,3 +1206,4 @@ void testMotorAll ()
   delay(500);
 
 }
+
